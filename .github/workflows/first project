@@ -1,1 +1,688 @@
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
 
+# 1. PAGE CONFIG
+st.set_page_config(
+    page_title="F1 Performance Index Dashboard",
+    page_icon="🏎️",
+    layout="wide",
+)
+
+# 2. THE DATA MODEL
+# All scores live on a 60-99 scale to mimic a "FIFA-style" rating system.
+# Driver attributes: Pace, Racecraft, Awareness, Experience
+# Constructor attributes: Aerodynamics, MechanicalGrip, Stability, Engine, Experience
+# NOTE: These are illustrative ratings for demo purposes, not official performance figures.
+
+def build_default_drivers() -> pd.DataFrame:
+    data = [
+        ("Max Verstappen", "Red Bull Racing", 97, 95, 78, 88),
+        ("Isack Hadjar", "Red Bull Racing",   84, 81, 81, 70),
+        ("Lewis Hamilton", "Ferrari",         90, 92, 92, 98),
+        ("Charles Leclerc", "Ferrari",        94, 91, 90, 82),
+        ("Lando Norris", "McLaren",           95, 92, 82, 82),
+        ("George Russell", "Mercedes",        93, 93, 90, 82),
+        ("Kimi Antonelli", "Mercedes",        81, 81, 73, 69),
+        ("Oscar Piastri", "McLaren",          92, 95, 82, 76),
+        ("Fernando Alonso", "Aston Martin",   89, 88, 85, 99),
+        ("Sergio Perez", "Cadillac",          88, 86, 88, 85),
+        ("Valtteri Bottas", "Cadillac",       81, 82, 83, 88),
+        ("Pierre Gasly", "Alpine",            85, 85, 82, 83),
+        ("Esteban Ocon", "Haas",              83, 82, 85, 83),
+        ("Lance Stroll", "Aston Martin",      75, 79, 75, 84),
+        ("Liam Lawson", "Racing Bulls",       77, 81, 71, 72),
+        ("Arvid Linblad", "Racing Bulls",     69, 68, 70, 60),
+        ("Oliver Bearman", "Haas",            80, 83, 70, 71),
+        ("Gabriel Bortoleto", "Audi",         80, 78, 79, 68),
+        ("Carlos Sainz", "Williams",          85, 87, 80, 88),
+        ("Alexander Albon", "Williams",       84, 89, 78, 83),
+        ("Nico Hulkenberg", "Audi",           84, 87, 90, 88),
+        ("Franco Colapinto", "Alpine",        75, 71, 73, 68),
+    ]
+    return pd.DataFrame(
+        data,
+        columns=["Driver", "Team", "Pace", "Racecraft", "Awareness", "Experience"],
+    )
+
+
+def build_default_constructors() -> pd.DataFrame:
+    data = [
+        ("Red Bull Racing", 87, 83, 85, 85, 70),
+        ("Ferrari",         93, 89, 91, 90, 75),
+        ("McLaren",         85, 83, 82, 92, 85),
+        ("Mercedes",        95, 90, 92, 93, 97),
+        ("Cadillac",        50, 51, 50, 82, 53),
+        ("Racing Bulls",    70, 68, 70, 82, 68),
+        ("Aston Martin",    54, 53, 57, 71, 58),
+        ("Alpine",          73, 70, 72, 91, 82),
+        ("Haas",            65, 65, 65, 87, 70),
+        ("Audi",            57, 55, 54, 65, 57),
+        ("Williams",        59, 57, 55, 90, 75),
+    ]
+    return pd.DataFrame(
+        data,
+        columns=[
+            "Team",
+            "Aerodynamics",
+            "MechanicalGrip",
+            "Stability",
+            "Engine",
+            "EnergyManagement",
+        ],
+    )
+
+# Car attribute base weights
+CAR_ATTRIBUTE_WEIGHTS = {
+    "Aerodynamics": 0.25,
+    "MechanicalGrip": 0.15,
+    "Stability": 0.15,
+    "Engine": 0.20,
+    "EnergyManagement": 0.25,
+}
+
+# Track weighting profiles: How much each car attribute matters per circuit type. 
+# Engine (20%) and EnergyManagement (25%) have constant weights across all tracks.
+# Aerodynamics, Mechanical Grip, and Stability vary by track but sum to 55%.
+# These reflect real-world intuition: Monza rewards low-drag/high top-speed aero efficiency, Monaco rewards mechanical grip and stability in a low-speed, bumpy, wall-lined street circuit, and Silverstone is a "balanced" high-energy circuit with fast and technical corners.
+TRACK_PROFILES = {
+    "Monza": {
+        "Aerodynamics": 0.70 * 0.55,
+        "MechanicalGrip": 0.15 * 0.55,
+        "Stability": 0.15 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+    "Monaco": {
+        "Aerodynamics": 0.10 * 0.55,
+        "MechanicalGrip": 0.60 * 0.55,
+        "Stability": 0.30 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+    "Silverstone": {
+        "Aerodynamics": 0.34 * 0.55,
+        "MechanicalGrip": 0.33 * 0.55,
+        "Stability": 0.33 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+    "Spa": {
+        "Aerodynamics": 0.45 * 0.55,
+        "MechanicalGrip": 0.20 * 0.55,
+        "Stability": 0.35 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+    "Singapore": {
+        "Aerodynamics": 0.20 * 0.55,
+        "MechanicalGrip": 0.55 * 0.55,
+        "Stability": 0.25 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+    "Suzuka": {
+        "Aerodynamics": 0.40 * 0.55,
+        "MechanicalGrip": 0.20 * 0.55,
+        "Stability": 0.40 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+    "Baku": {
+        "Aerodynamics": 0.45 * 0.55,
+        "MechanicalGrip": 0.35 * 0.55,
+        "Stability": 0.20 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+    "Interlagos": {
+        "Aerodynamics": 0.35 * 0.55,
+        "MechanicalGrip": 0.30 * 0.55,
+        "Stability": 0.35 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+    "Melbourne": {
+        "Aerodynamics": 0.40 * 0.55,
+        "MechanicalGrip": 0.25 * 0.55,
+        "Stability": 0.35 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+    "Abu Dhabi": {
+        "Aerodynamics": 0.35 * 0.55,
+        "MechanicalGrip": 0.35 * 0.55,
+        "Stability": 0.30 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+    "Miami": {
+        "Aerodynamics": 0.35 * 0.55,
+        "MechanicalGrip": 0.35 * 0.55,
+        "Stability": 0.30 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+    "Las Vegas": {
+        "Aerodynamics": 0.60 * 0.55,
+        "MechanicalGrip": 0.20 * 0.55,
+        "Stability": 0.20 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+    "Zandvoort": {
+        "Aerodynamics": 0.25 * 0.55,
+        "MechanicalGrip": 0.40 * 0.55,
+        "Stability": 0.35 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+    "Barcelona": {
+        "Aerodynamics": 0.35 * 0.55,
+        "MechanicalGrip": 0.30 * 0.55,
+        "Stability": 0.35 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+    "Austin": {
+        "Aerodynamics": 0.35 * 0.55,
+        "MechanicalGrip": 0.25 * 0.55,
+        "Stability": 0.40 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+    "Mexico City": {
+        "Aerodynamics": 0.30 * 0.55,
+        "MechanicalGrip": 0.40 * 0.55,
+        "Stability": 0.30 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+    "Montreal": {
+        "Aerodynamics": 0.30 * 0.55,
+        "MechanicalGrip": 0.40 * 0.55,
+        "Stability": 0.30 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+    "Jeddah": {
+        "Aerodynamics": 0.35 * 0.55,
+        "MechanicalGrip": 0.20 * 0.55,
+        "Stability": 0.45 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+    "Shanghai": {
+        "Aerodynamics": 0.30 * 0.55,
+        "MechanicalGrip": 0.35 * 0.55,
+        "Stability": 0.35 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+    "Bahrain": {
+        "Aerodynamics": 0.30 * 0.55,
+        "MechanicalGrip": 0.40 * 0.55,
+        "Stability": 0.30 * 0.55,
+        "Engine": 0.20,
+        "EnergyManagement": 0.25,
+    },
+}
+
+# TRACK_PROFILES above describe layout/corner character and don't change race to race. 
+# These modifiers describe the SESSION (conditions on a given day) and are applied on top of a TRACK_PROFILES entry before the car score is calculated, then renormalized back to sum to 1.0.
+
+WETNESS_MODIFIERS = {
+    "dry":          {"Aerodynamics": 1.00, "MechanicalGrip": 1.00, "Stability": 1.00, "Engine": 1.00, "EnergyManagement": 1.00},
+    "damp":         {"Aerodynamics": 0.90, "MechanicalGrip": 1.15, "Stability": 1.15, "Engine": 0.95, "EnergyManagement": 0.95},
+    "intermediate": {"Aerodynamics": 0.80, "MechanicalGrip": 1.25, "Stability": 1.25, "Engine": 0.90, "EnergyManagement": 0.90},
+    "wet":          {"Aerodynamics": 0.70, "MechanicalGrip": 1.40, "Stability": 1.35, "Engine": 0.80, "EnergyManagement": 0.85},
+}
+
+TIME_OF_DAY_MODIFIERS = {
+    "day":      {"Stability": 1.00, "MechanicalGrip": 1.00},
+    "twilight": {"Stability": 1.05, "MechanicalGrip": 1.02},
+    "night":    {"Stability": 1.10, "MechanicalGrip": 1.05},
+}
+
+
+def _clamp(value, lo, hi):
+    return min(hi, max(lo, value))
+
+
+def track_temp_modifiers(track_temp_c: float) -> dict:
+    """
+    Continuous (not bucketed) since track temp varies session to session.
+    Baseline ~30C is treated as neutral (modifier = 1.0). Hot tracks push
+    grip/engine/energy modifiers down (degradation, cooling, thermal
+    management); cold tracks push aero up slightly (denser air) but grip
+    down (tires never reach their window).
+    """
+    delta = track_temp_c - 30  # positive = hotter than baseline
+    return {
+        "Aerodynamics": _clamp(1 - delta * 0.003, 0.85, 1.15),
+        "MechanicalGrip": _clamp(1 - abs(delta) * 0.0035, 0.80, 1.05),
+        "Engine": _clamp(1 - max(0, delta) * 0.002, 0.85, 1.00),
+        "EnergyManagement": _clamp(1 - max(0, delta) * 0.0015, 0.85, 1.00),
+    }
+
+
+def apply_conditions(base_weights: dict, wetness: str, time_of_day: str, track_temp_c: float) -> dict:
+    """
+    Applies wetness, time-of-day, and track-temperature modifiers to a
+    TRACK_PROFILES entry, then renormalizes so the five attribute weights
+    sum back to 1.0 (modifiers alone would push the total away from 1.0).
+    """
+    wet = WETNESS_MODIFIERS[wetness]
+    tod = TIME_OF_DAY_MODIFIERS[time_of_day]
+    temp = track_temp_modifiers(track_temp_c)
+
+    adjusted = {}
+    for key, value in base_weights.items():
+        value *= wet.get(key, 1)
+        value *= tod.get(key, 1)
+        value *= temp.get(key, 1)
+        adjusted[key] = value
+
+    total = sum(adjusted.values())
+    return {key: value / total for key, value in adjusted.items()}
+
+
+# Driver score weighting: Pace dominates, Racecraft is secondary,
+# Awareness is a smaller modifier (avoiding incidents/maximizing strategy reads).
+# Experience is intentionally excluded from the raw driver score and instead used as a "consistency" modifier later in the OPI calculation, since a rookie and a
+DRIVER_WEIGHTS = {"Pace": 0.60, "Racecraft": 0.30, "Awareness": 0.10}
+
+# Final blend between car and driver contribution to the OPI.
+CAR_WEIGHT_IN_FINAL = 0.55
+DRIVER_WEIGHT_IN_FINAL = 0.45
+
+# 3. THE PREDICTION ALGORITHM
+def calculate_driver_score(driver_row: dict) -> float:
+    """
+    Weighted driver score: 60% Pace, 30% Racecraft, 10% Awareness.
+    Experience is intentionally excluded here -- it's used later as a
+    *consistency* (variance) modifier rather than a raw performance input,
+    since a rookie and a veteran can both be fast, but the veteran is more
+    likely to repeat that pace under pressure.
+    """
+    return (
+        driver_row["Pace"] * DRIVER_WEIGHTS["Pace"]
+        + driver_row["Racecraft"] * DRIVER_WEIGHTS["Racecraft"]
+        + driver_row["Awareness"] * DRIVER_WEIGHTS["Awareness"]
+    )
+
+
+def calculate_car_score(
+    constructor_row: dict,
+    track_profile: str,
+    wetness: str = "dry",
+    time_of_day: str = "day",
+    track_temp_c: float = 30.0,
+) -> float:
+    """
+    Track-adjusted car score. Each track profile re-weights all five car attributes.
+    Engine and Energy Management have constant weights (20% and 25%) across all tracks
+    under baseline dry conditions. Aerodynamics, Mechanical Grip, and Stability vary
+    by track to reflect circuit characteristics, since a car that's a great qualifying
+    machine on a low-drag circuit (Monza) might be a handful through Monaco's hairpins.
+
+    wetness / time_of_day / track_temp_c further adjust those weights for the session
+    via apply_conditions() -- e.g. a wet, cool, night race shifts weight away from
+    Aerodynamics and toward MechanicalGrip and Stability relative to the track's dry
+    baseline profile.
+    """
+    base_weights = TRACK_PROFILES[track_profile]
+    weights = apply_conditions(base_weights, wetness, time_of_day, track_temp_c)
+    return (
+        constructor_row["Aerodynamics"] * weights["Aerodynamics"]
+        + constructor_row["MechanicalGrip"] * weights["MechanicalGrip"]
+        + constructor_row["Stability"] * weights["Stability"]
+        + constructor_row["Engine"] * weights["Engine"]
+        + constructor_row["EnergyManagement"] * weights["EnergyManagement"]
+    )
+
+
+def calculate_opi(
+    driver_row: dict,
+    constructor_row: dict,
+    track_profile: str,
+    wetness: str = "dry",
+    time_of_day: str = "day",
+    track_temp_c: float = 30.0,
+) -> dict:
+    """
+    Combines the track-adjusted car score (55%) and the driver score (45%)
+    into a single Overall Performance Index (0-100), then derives a
+    predicted grid range using Experience + Engine as a "variance"
+    modifier: more experienced drivers in more reliable cars get a tighter
+    (more confident) predicted range, while rookies in fragile cars get a
+    wider band of uncertainty.
+
+    wetness / time_of_day / track_temp_c are passed through to
+    calculate_car_score to layer session conditions on top of the track's
+    static profile.
+
+    Returns a dict with the OPI, the sub-scores, and the predicted ranges.
+    """
+    driver_score = calculate_driver_score(driver_row)
+    car_score = calculate_car_score(constructor_row, track_profile, wetness, time_of_day, track_temp_c)
+
+    final_index = (car_score * CAR_WEIGHT_IN_FINAL) + (driver_score * DRIVER_WEIGHT_IN_FINAL)
+    final_index = float(np.clip(final_index, 0, 100))
+
+    # --- Variance modifier ---------------------------------------------
+    # Average the driver's Experience and the car's Engine into a single "consistency" score. High consistency (close to 99) shrinks the +/- grid-position uncertainty band; low consistency widens it.
+    consistency = (driver_row["Experience"] + constructor_row["Engine"]) / 2.0
+
+    # Map consistency (60-99) to a position-range spread (roughly 1-4 places). This is a simple linear inverse mapping: higher consistency -> smaller spread. consistency=99 -> spread ~1, consistency=60 -> spread ~4
+    spread = np.interp(consistency, [60, 99], [4, 1])
+    spread = int(round(spread))
+    spread = max(1, spread)
+
+    # --- Convert OPI into an estimated grid slot -------------------------
+    # Simple, transparent mapping: a higher OPI implies a smaller (better) grid number. We anchor OPI=100 -> P1 and degrade roughly 1 grid slot per ~3.2 OPI points lost, capped at P22 (a full F1 grid).
+    base_position = (100 - final_index) / 3.2 + 1
+    base_position = float(np.clip(base_position, 1, 22))
+
+    qual_low = max(1, int(round(base_position - spread)))
+    qual_high = min(22, int(round(base_position + spread)))
+
+    # Race finish tends to carry slightly more variance than qualifying because of races incidents, strategy, and tire wear -- so we widen the race-day band a little relative to the qualifying band.
+    race_spread = spread + 1
+    race_low = max(1, int(round(base_position - race_spread)))
+    race_high = min(22, int(round(base_position + race_spread)))
+
+    return {
+        "driver_score": round(driver_score, 1),
+        "car_score": round(car_score, 1),
+        "final_index": round(final_index, 1),
+        "consistency": round(consistency, 1),
+        "spread": spread,
+        "qual_range": (qual_low, qual_high),
+        "race_range": (race_low, race_high),
+    }
+
+
+def simulate_baseline_rivals(
+    track_profile: str,
+    wetness: str = "dry",
+    time_of_day: str = "day",
+    track_temp_c: float = 30.0,
+    n: int = 4,
+    seed: int = 42,
+) -> pd.DataFrame:
+    """
+    Generates `n` simulated baseline driver/car combos for comparison bars.
+    These represent a spread of midfield-to-front-running rivals so the
+    user's customized pairing has something concrete to be benchmarked
+    against. A fixed seed keeps the comparison set stable across reruns
+    unless the user changes inputs that affect it. Rivals are scored under
+    the same session conditions as the user's pairing so the benchmark
+    stays fair -- a wet race shouldn't compare a wet-scored custom car
+    against dry-scored rivals.
+    """
+    rng = np.random.default_rng(seed)
+    rivals = []
+    names = ["Rival A", "Rival B", "Rival C", "Rival D"][:n]
+    for name in names:
+        driver_row = {
+            "Pace": rng.integers(78, 97),
+            "Racecraft": rng.integers(75, 95),
+            "Awareness": rng.integers(75, 95),
+            "Experience": rng.integers(60, 99),
+        }
+        constructor_row = {
+            "Aerodynamics": rng.integers(78, 96),
+            "MechanicalGrip": rng.integers(78, 96),
+            "Stability": rng.integers(78, 96),
+            "Engine": rng.integers(70, 97),
+            "EnergyManagement": rng.integers(75, 90),
+        }
+        result = calculate_opi(driver_row, constructor_row, track_profile, wetness, time_of_day, track_temp_c)
+        rivals.append({"Name": name, "OPI": result["final_index"]})
+    return pd.DataFrame(rivals)
+
+
+# 4. PLOTLY VISUAL COMPONENTS
+def make_gauge_chart(opi_value: float) -> go.Figure:
+    """Gauge chart for the final OPI score, color-banded for quick read."""
+    fig = go.Figure(
+        go.Indicator(
+            mode="gauge+number",
+            value=opi_value,
+            number={"suffix": " / 100", "font": {"size": 40}},
+            title={"text": "Overall Performance Index", "font": {"size": 18}},
+            gauge={
+                "axis": {"range": [0, 100], "tickwidth": 1},
+                "bar": {"color": "#E10600"},  # F1-red needle
+                "steps": [
+                    {"range": [0, 50], "color": "#3a3a3a"},
+                    {"range": [50, 75], "color": "#6e6e6e"},
+                    {"range": [75, 100], "color": "#c9c9c9"},
+                ],
+                "threshold": {
+                    "line": {"color": "white", "width": 4},
+                    "thickness": 0.75,
+                    "value": opi_value,
+                },
+            },
+        )
+    )
+    fig.update_layout(height=320, margin=dict(l=20, r=20, t=60, b=10))
+    return fig
+
+
+def make_radar_chart(driver_row: dict, constructor_row: dict, driver_name: str, team_name: str) -> go.Figure:
+    """
+    Radar/spider chart comparing the driver's skill balance (Pace,
+    Racecraft, Awareness, Experience) against the constructor's capability
+    balance (Aero, Grip, Stability, Engine) on a shared 0-100 axis.
+    """
+    categories = ["Attribute 1", "Attribute 2", "Attribute 3", "Attribute 4"]
+    driver_labels = ["Pace", "Racecraft", "Awareness", "Experience"]
+    car_labels = ["Aerodynamics", "MechanicalGrip", "Stability", "Engine", "EnergyManagement"]
+
+    driver_values = [driver_row[k] for k in driver_labels]
+    car_values = [constructor_row[k] for k in car_labels]
+
+    # Close the loop for both traces by repeating the first value.
+    driver_values_closed = driver_values + [driver_values[0]]
+    car_values_closed = car_values + [car_values[0]]
+    theta_driver = driver_labels + [driver_labels[0]]
+    theta_car = car_labels + [car_labels[0]]
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatterpolar(
+            r=driver_values_closed,
+            theta=theta_driver,
+            fill="toself",
+            name=f"Driver: {driver_name}",
+            line_color="#E10600",
+        )
+    )
+    fig.add_trace(
+        go.Scatterpolar(
+            r=car_values_closed,
+            theta=theta_car,
+            fill="toself",
+            name=f"Constructor: {team_name}",
+            line_color="#1E88E5",
+        )
+    )
+    fig.update_layout(
+        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+        showlegend=True,
+        height=420,
+        margin=dict(l=40, r=40, t=40, b=40),
+    )
+    return fig
+
+
+def make_comparison_bar_chart(custom_name: str, custom_opi: float, rivals_df: pd.DataFrame) -> go.Figure:
+    """Bar chart benchmarking the user's custom pairing against simulated rivals."""
+    names = [custom_name] + rivals_df["Name"].tolist()
+    values = [custom_opi] + rivals_df["OPI"].tolist()
+    colors = ["#E10600"] + ["#6e6e6e"] * len(rivals_df)
+
+    # Sort descending so the chart reads like a leaderboard.
+    order = np.argsort(values)[::-1]
+    names = [names[i] for i in order]
+    values = [values[i] for i in order]
+    colors = [colors[i] for i in order]
+
+    fig = go.Figure(
+        go.Bar(
+            x=names,
+            y=values,
+            marker_color=colors,
+            text=[f"{v:.1f}" for v in values],
+            textposition="outside",
+        )
+    )
+    fig.update_layout(
+        yaxis=dict(title="OPI", range=[0, 105]),
+        xaxis=dict(title=""),
+        height=380,
+        margin=dict(l=20, r=20, t=30, b=20),
+    )
+    return fig
+
+# 5. STREAMLIT UI
+def main():
+    st.title("🏎️ F1 Performance Index Dashboard")
+    st.caption(
+        "Model driver and constructor attributes, adjust them for "
+        "what-if upgrade scenarios, and predict grid outcomes by track profile."
+    )
+
+    drivers_df = build_default_drivers()
+    constructors_df = build_default_constructors()
+
+    # -------------------------------------------------------------
+    # SIDEBAR: selection + what-if sliders
+    # -------------------------------------------------------------
+    with st.sidebar:
+        st.header("Race Setup")
+
+        track_profile = st.selectbox("Track Profile", list(TRACK_PROFILES.keys()))
+
+        st.markdown("**Session Conditions**")
+        wetness = st.selectbox("Track Status", ["dry", "damp", "intermediate", "wet"])
+        time_of_day = st.selectbox("Time of Day", ["day", "twilight", "night"])
+        track_temp_c = st.slider("Track Temperature (°C)", 5, 55, 30)
+
+        constructor_name = st.selectbox("Constructor", constructors_df["Team"].tolist())
+
+        # Only show drivers who race for the selected constructor by default,
+        # but allow any driver to be paired with any car (e.g. simulating a
+        # driver transfer) by listing the full roster.
+        driver_name = st.selectbox("Driver", drivers_df["Driver"].tolist())
+
+        st.divider()
+        st.subheader("What-If Upgrade Sliders")
+        st.caption("Tweak car/driver stats to simulate upgrades or form changes.")
+
+        base_constructor = constructors_df[constructors_df["Team"] == constructor_name].iloc[0]
+        base_driver = drivers_df[drivers_df["Driver"] == driver_name].iloc[0]
+
+        st.markdown("**Car Attributes**")
+        aero = st.slider("Aero Efficiency", 60, 99, int(base_constructor["Aerodynamics"]))
+        grip = st.slider("Mechanical Grip", 60, 99, int(base_constructor["MechanicalGrip"]))
+        stability = st.slider("Vehicle Stability", 60, 99, int(base_constructor["Stability"]))
+        reliability = st.slider("Engine", 60, 99, int(base_constructor["Engine"]))
+        energy_management = st.slider("Energy Management", 60, 99, int(base_constructor["EnergyManagement"]))
+
+        st.markdown("**Driver Attributes**")
+        pace = st.slider("Pace", 60, 99, int(base_driver["Pace"]))
+        racecraft = st.slider("Racecraft", 60, 99, int(base_driver["Racecraft"]))
+        awareness = st.slider("Awareness", 60, 99, int(base_driver["Awareness"]))
+        experience = st.slider("Experience", 60, 99, int(base_driver["Experience"]))
+
+        st.divider()
+        st.caption(
+            "Defaults reflect curated example ratings, not official "
+            "performance data. See the top-of-file docstring for how "
+            "`fastf1` could supply real telemetry-derived values."
+        )
+
+    # Assemble the (possibly user-adjusted) driver/constructor rows used
+    # for every calculation below.
+    driver_row = {
+        "Pace": pace,
+        "Racecraft": racecraft,
+        "Awareness": awareness,
+        "Experience": experience,
+    }
+    constructor_row = {
+        "Aerodynamics": aero,
+        "MechanicalGrip": grip,
+        "Stability": stability,
+        "Engine": reliability,
+        "EnergyManagement": energy_management,
+    }
+
+    result = calculate_opi(driver_row, constructor_row, track_profile, wetness, time_of_day, track_temp_c)
+
+    # -------------------------------------------------------------
+    # MAIN VIEW
+    # -------------------------------------------------------------
+    top_left, top_right = st.columns([1, 1.3])
+
+    with top_left:
+        st.plotly_chart(make_gauge_chart(result["final_index"]), use_container_width=True)
+
+    with top_right:
+        st.subheader("Predicted Outcome")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.metric(
+                "Predicted Qualifying Position",
+                f"P{result['qual_range'][0]}–P{result['qual_range'][1]}",
+            )
+        with c2:
+            st.metric(
+                "Predicted Race Finish",
+                f"P{result['race_range'][0]}–P{result['race_range'][1]}",
+            )
+
+        st.markdown(
+            f"""
+            **Breakdown for {driver_name} / {constructor_name} at {track_profile}**
+            **({wetness}, {time_of_day}, {track_temp_c}°C):**
+            - Driver Score (Pace/Racecraft/Awareness weighted): **{result['driver_score']}**
+            - Track-Adjusted Car Score: **{result['car_score']}**
+            - Consistency factor (Experience + Engine avg): **{result['consistency']}**
+              → drives a ±{result['spread']} grid-position confidence band
+            - **Final OPI: {result['final_index']} / 100**
+            """
+        )
+
+    st.divider()
+
+    mid_left, mid_right = st.columns(2)
+
+    with mid_left:
+        st.subheader("Skill Balance: Driver vs. Constructor")
+        st.plotly_chart(
+            make_radar_chart(driver_row, constructor_row, driver_name, constructor_name),
+            use_container_width=True,
+        )
+
+    with mid_right:
+        st.subheader(f"Benchmark vs. Simulated Rivals — {track_profile} ({wetness}, {time_of_day})")
+        rivals_df = simulate_baseline_rivals(track_profile, wetness, time_of_day, track_temp_c)
+        custom_label = f"{driver_name.split()[-1]} / {constructor_name}"
+        st.plotly_chart(
+            make_comparison_bar_chart(custom_label, result["final_index"], rivals_df),
+            use_container_width=True,
+        )
+        st.caption(
+            "Rival drivers/cars are randomly simulated within realistic "
+            "ranges for benchmarking purposes, not real competitors."
+        )
+
+
+if __name__ == "__main__":
+    main()
